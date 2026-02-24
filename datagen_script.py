@@ -1,288 +1,241 @@
+"""
+datagen_script.py
+=================
+Block-based Multi-Subject ECG Simulation Framework (HDF5 Output)
+
+1. Scenario Engine: Time-based activities with physio modulation (shifts).
+2. Block-based Generation: 60-second chunks to minimize memory & allow scaling.
+3. HDF5 Storage: Continuous binary storage (float32) for raw signals.
+4. Separation of Labels: Ground truth saved separately for evaluation.
+"""
 
 import os
 import math
+import random
+import h5py
 import numpy as np
 import pandas as pd
 import neurokit2 as nk
+from datetime import datetime, timedelta
+from scipy.ndimage import gaussian_filter1d
 
-# --- Configuration ---
-SAMPLING_RATE = 250      # Hz (Higher for quality)
-OUTPUT_ROOT = "./data/raw/datagen/final_dataset"
-RAW_DIR = os.path.join(OUTPUT_ROOT, "tier1_raw_samples")
-FEATURE_DIR = os.path.join(OUTPUT_ROOT, "tier2_features_24h")
+# ══════════════════════════════════════════════════════════════
+#   1. CONFIGURATION
+# ══════════════════════════════════════════════════════════════
 
-os.makedirs(RAW_DIR, exist_ok=True)
-os.makedirs(FEATURE_DIR, exist_ok=True)
+CONFIG = {
+    "duration_hours":      8,          # 07:00 - 15:00
+    "start_time":          "07:00",
+    "sampling_rate":       250,        # Hz
+    "block_sec":           60,         # Process in 1-min windows
+    "output_dir":          "./data/research_dataset",
+    "h5_filename":         "dataset.h5",
+    "gt_filename":         "stress_ground_truth.csv",
+    "meta_filename":       "subject_metadata.csv",
 
-# --- Base Parameters (Male 25yo) ---
-BASE_FALLBACK = {"heart_rate": 65.0, "low_frequency": 0.10, "high_frequency": 0.25}
-
-# Level Transforms (0-5)
-LEVEL_TRANSFORMS = {
-    0: {"hr_mul": 1.00, "hr_std_mul": 1.00, "low_add": 0.00, "high_add": 0.00},
-    1: {"hr_mul": 1.05, "hr_std_mul": 0.90, "low_add": 0.05, "high_add": -0.05},
-    2: {"hr_mul": 1.15, "hr_std_mul": 0.80, "low_add": 0.10, "high_add": -0.10},
-    3: {"hr_mul": 1.30, "hr_std_mul": 0.60, "low_add": 0.20, "high_add": -0.15},
-    4: {"hr_mul": 1.50, "hr_std_mul": 0.40, "low_add": 0.30, "high_add": -0.20},
-    5: {"hr_mul": 1.70, "hr_std_mul": 0.25, "low_add": 0.40, "high_add": -0.25},
+    "subjects_count":      5,
+    "age_range":           (19, 69),
 }
 
-ARTIFACT_CONFIG = {
-    0: {'baseline_amp': 0.035, 'muscle_amp': 0.030, 'powerline_amp': 0.010, 'spike_prob': 0.001},
-    1: {'baseline_amp': 0.020, 'muscle_amp': 0.010, 'powerline_amp': 0.005, 'spike_prob': 0.0005},
-    2: {'baseline_amp': 0.055, 'muscle_amp': 0.040, 'powerline_amp': 0.018, 'spike_prob': 0.002},
-    3: {'baseline_amp': 0.030, 'muscle_amp': 0.020, 'powerline_amp': 0.010, 'spike_prob': 0.001},
-    4: {'baseline_amp': 0.035, 'muscle_amp': 0.025, 'powerline_amp': 0.012, 'spike_prob': 0.0015},
-    5: {'baseline_amp': 0.040, 'muscle_amp': 0.035, 'powerline_amp': 0.015, 'spike_prob': 0.002}, 
+# ══════════════════════════════════════════════════════════════
+#   2. SCENARIO ENGINE (Physiological Modulation)
+# ══════════════════════════════════════════════════════════════
+
+# Modulation values: (HR_shift_bpm, SDNN_shift_pct, stress_label)
+# SDNN_shift_pct: negative means reduction
+ACTIVITIES = {
+    "commute":        (10, -0.15, 1),
+    "normal_work":    (0,   0.00, 0),
+    "meeting":        (15, -0.25, 2),
+    "lunch":          (-5,  0.10, 0),
+    "deadline":       (20, -0.35, 3),
+    "break":          (-2,  0.05, 0),
+    "physical_load":  (25, -0.10, 2), # Higher HR, less SDNN drop than mental stress
+    "emergency":      (35, -0.50, 3)
 }
 
-def get_asian_hrv_baseline(age):
-    age = max(19, min(80, age))
-    hf = math.exp(-0.039 * age + 6.833)
-    lf = math.exp(-0.047 * age + 7.197)
-    sdnn = max(5.0, -0.502 * age + 53.907)
-    return {"SDNN_base": sdnn, "HR_base": 65.0}
-
-def get_stress_level_at_hour(hour, scenario_type):
-    """Defined circadian patterns for 3 scenarios."""
-    h = hour % 24
-    
-    if scenario_type == "Normal":
-        # Sleep 0-6, Wake 6-8, Work 8-17, Relax 17-22, Sleep 22-24
-        if 0 <= h < 6: return 0
-        if 6 <= h < 8: return 1
-        if 8 <= h < 12: return 2
-        if 12 <= h < 13: return 1 # Lunch
-        if 13 <= h < 17: return 2
-        if 17 <= h < 22: return 1
-        if 22 <= h < 24: return 0
-        
-    elif scenario_type == "Acute_Stress":
-        # 10-12 High Stress, 16-17 Peak Stress
-        if 0 <= h < 6: return 0
-        if 6 <= h < 8: return 1
-        if 8 <= h < 10: return 2
-        if 10 <= h < 12: return 4 # High Stress
-        if 12 <= h < 13: return 1
-        if 13 <= h < 16: return 3
-        if 16 <= h < 17: return 5 # PEAK
-        if 17 <= h < 18: return 2 # Cooldown
-        if 18 <= h < 22: return 1
-        return 0
-        
-    elif scenario_type == "Chronic_Stress":
-        # Poor sleep (L1), All day High Stress (L4-5)
-        if 0 <= h < 6: return 1 # Poor sleep
-        if 6 <= h < 8: return 2 # Morning anxiety
-        if 8 <= h < 12: return 4
-        if 12 <= h < 13: return 3 # Anxious Lunch
-        if 13 <= h < 18: return 5 # Exhaustion
-        if 18 <= h < 22: return 4 # Cannot relax
-        return 3 # Insomnia
-        
-    return 0
-
-def generate_noise(length, level):
-    cfg = ARTIFACT_CONFIG.get(level, ARTIFACT_CONFIG[0])
-    t = np.arange(length) / float(SAMPLING_RATE)
-    rng = np.random.RandomState()
-    
-    baseline = cfg['baseline_amp'] * np.sin(2.0 * np.pi * 0.2 * t + rng.uniform(0, 2*np.pi))
-    pl_freq = 50
-    powerline = cfg['powerline_amp'] * np.sin(2.0 * np.pi * pl_freq * t + rng.uniform(0, 2*np.pi))
-    noise = rng.normal(0.0, 1.0, size=length) * cfg['muscle_amp']
-    
-    if cfg.get('spike_prob', 0) > 0:
-        spike_mask = rng.rand(length) < cfg['spike_prob']
-        noise[spike_mask] += cfg['muscle_amp'] * 5.0 * rng.choice([-1, 1], size=np.sum(spike_mask))
-
-    return baseline + powerline + noise
-
-def generate_ecg_segment(duration_sec, level, age, gender="M", add_noise=False):
-    # Determine parameters
-    base = get_asian_hrv_baseline(age)
-    tr = LEVEL_TRANSFORMS.get(level, LEVEL_TRANSFORMS[0])
-    
-    # Simple Gender adj
-    g_mul = 1.05 if gender == 'F' else 1.0
-    
-    target_hr = base['HR_base'] * tr['hr_mul'] * g_mul
-    target_sdnn = base['SDNN_base'] * tr['hr_std_mul']
-    # convert SDNN to hr_std approximation
-    target_hr_std = (target_sdnn * (target_hr**2)) / 60000.0
-    
-    lf = BASE_FALLBACK['low_frequency'] + tr['low_add']
-    hf = BASE_FALLBACK['high_frequency'] + tr['high_add']
-    
-    try:
-        ecg = nk.ecg_simulate(
-            duration=duration_sec, 
-            sampling_rate=SAMPLING_RATE, 
-            heart_rate=target_hr, 
-            heart_rate_std=target_hr_std,
-            low_frequency=lf,
-            high_frequency=hf
-        )
-        if add_noise:
-            ecg += generate_noise(len(ecg), level)
-        return ecg, target_hr, target_sdnn
-    except:
-        return np.zeros(int(duration_sec*SAMPLING_RATE)), target_hr, target_sdnn
-
-def extract_features_from_segment(ecg_segment):
-    try:
-        # Fast extraction using neurokit
-        # Clean first? If noisy yes.
-        # For speed in simulation, we try raw peaks first.
-        # If noise is high, clean is needed.
-        cleaned = nk.ecg_clean(ecg_segment, sampling_rate=SAMPLING_RATE, method="neurokit")
-        _, rpeaks = nk.ecg_peaks(cleaned, sampling_rate=SAMPLING_RATE)
-        peaks = rpeaks['ECG_R_Peaks']
-        
-        if len(peaks) < 3: return None
-        
-        hrv_time = nk.hrv_time(peaks, sampling_rate=SAMPLING_RATE, show=False)
-        # hrv_freq = nk.hrv_frequency(peaks, sampling_rate=SAMPLING_RATE, show=False) # Slow
-        
-        # Simplified return
-        return {
-            "HR": 60000/hrv_time['HRV_MeanNN'].values[0],
-            "SDNN": hrv_time['HRV_SDNN'].values[0],
-            "RMSSD": hrv_time['HRV_RMSSD'].values[0],
-            "pNN50": hrv_time['HRV_pNN50'].values[0] if 'HRV_pNN50' in hrv_time else 0.0,
-            # Skip freq domain for speed unless critical (can add if needed)
-        }
-    except:
-        return None
-
-# --- Main Generators ---
-
-def generate_tier1_raw_samples():
-    """Generate 5-minute Raw ECG samples for visualization."""
-    print("Generating Tier 1: Raw Samples (5 mins)...")
-    scenarios = [
-        ("Normal_Morning", 2, "Normal"),
-        ("Acute_Peak_Stress", 5, "Stress"),
-        ("Chronic_Exhaustion", 4, "Stress")
+SCENARIOS = {
+    "office_worker": [
+        ("07:00", "07:30", "commute"),
+        ("07:30", "09:00", "normal_work"),
+        ("09:00", "11:00", "meeting"),
+        ("11:00", "12:00", "lunch"),
+        ("12:00", "14:00", "normal_work"),
+        ("14:00", "15:00", "deadline")
+    ],
+    "physical_worker": [
+        ("07:00", "08:00", "commute"),
+        ("08:00", "10:00", "physical_load"),
+        ("10:15", "10:30", "break"),
+        ("10:30", "12:00", "physical_load"),
+        ("12:00", "13:00", "lunch"),
+        ("13:00", "15:00", "physical_load")
+    ],
+    "high_pressure": [
+        ("07:00", "08:00", "commute"),
+        ("08:00", "10:00", "deadline"),
+        ("10:00", "11:00", "emergency"),
+        ("11:00", "12:00", "lunch"),
+        ("12:00", "14:00", "meeting"),
+        ("14:00", "15:00", "deadline")
     ]
-    
-    for name, level, _ in scenarios:
-        # Clean
-        ecg, _, _ = generate_ecg_segment(300, level, 25, "M", add_noise=False)
-        pd.DataFrame({"Time": np.arange(len(ecg))/SAMPLING_RATE, "Voltage": ecg}).to_csv(
-            os.path.join(RAW_DIR, f"Raw_{name}_Clean.csv"), index=False
-        )
-        # Noisy
-        ecg_n, _, _ = generate_ecg_segment(300, level, 25, "M", add_noise=True)
-        pd.DataFrame({"Time": np.arange(len(ecg_n))/SAMPLING_RATE, "Voltage": ecg_n}).to_csv(
-            os.path.join(RAW_DIR, f"Raw_{name}_Noisy.csv"), index=False
-        )
-    print("Tier 1 Complete.")
+}
 
-def compute_features_for_level(level, age, gender="M", add_noise_jitter=False):
-    """Compute HRV features directly from formulas (no ECG simulation needed).
+# ══════════════════════════════════════════════════════════════
+#   3. CORE MODELS
+# ══════════════════════════════════════════════════════════════
+
+def get_hrv_baseline(age: int) -> dict:
+    """Age-dependent baseline based on Asian regression studies."""
+    age = float(np.clip(age, 19, 69))
+    noise = lambda: 1.0 + random.uniform(-0.05, 0.05)
     
-    Features derived from level transforms + age baseline + realistic random variation.
-    Includes: HR, SDNN, RMSSD, pNN50, LF, HF, LF_HF_Ratio
-    """
-    base = get_asian_hrv_baseline(age)
-    tr = LEVEL_TRANSFORMS.get(level, LEVEL_TRANSFORMS[0])
-    g_mul = 1.05 if gender == 'F' else 1.0
-    rng = np.random.default_rng()
+    sdnn  = (-0.502 * age + 53.907) * noise()
+    hf    = math.exp(-0.039 * age + 6.833) * noise()
+    lf    = math.exp(-0.047 * age + 7.197) * noise()
     
-    # Target HR & SDNN
-    target_hr   = base['HR_base'] * tr['hr_mul'] * g_mul
-    target_sdnn = base['SDNN_base'] * tr['hr_std_mul']
-    
-    # RMSSD: ~1.2x SDNN at rest, decreases with stress
-    rmssd_ratio   = 1.2 - (level * 0.12)   # L0:1.2  L5:0.6
-    target_rmssd  = target_sdnn * rmssd_ratio
-    
-    # pNN50: age regression, scaled down by stress
-    pnn50_base    = max(0.0, -0.650 * age + 53.852)
-    pnn50_scale   = max(0.0, 1.0 - level * 0.18)  # L0:1.0  L5:0.10
-    target_pnn50  = pnn50_base * pnn50_scale
-    
-    # LF (ms²): sympathetic power — increases with stress
-    # Base LF ~1000 ms² at rest, rises with level
-    lf_base   = BASE_FALLBACK['low_frequency']   # fraction (0.10)
-    target_lf = (lf_base + tr['low_add']) * 10000  # scale to ms² range
-    
-    # HF (ms²): parasympathetic power — decreases with stress
-    hf_base   = BASE_FALLBACK['high_frequency']  # fraction (0.25)
-    target_hf = max(50.0, (hf_base + tr['high_add']) * 10000)
-    
-    # LF/HF ratio: key autonomic balance index
-    target_lfhf = target_lf / target_hf
-    
-    # Physiological jitter
-    jitter_pct = 0.05 if not add_noise_jitter else 0.12
-    
-    hr      = target_hr * (1.0 + rng.normal(0, jitter_pct))
-    sdnn    = max(1.0,   target_sdnn * (1.0 + rng.normal(0, jitter_pct)))
-    rmssd   = max(1.0,   target_rmssd * (1.0 + rng.normal(0, jitter_pct)))
-    pnn50   = max(0.0,   min(100.0, target_pnn50 * (1.0 + rng.normal(0, jitter_pct * 1.5))))
-    lf      = max(10.0,  target_lf * (1.0 + rng.normal(0, jitter_pct)))
-    hf      = max(10.0,  target_hf * (1.0 + rng.normal(0, jitter_pct)))
-    lf_hf   = max(0.01,  lf / hf)
-    
+    total_pow = lf + hf
     return {
-        "HR_Target":    target_hr,
-        "SDNN_Target":  target_sdnn,
-        "HR_Extracted": hr,
-        "SDNN_Extracted": sdnn,
-        "RMSSD":        rmssd,
-        "pNN50":        pnn50,
-        "LF":           round(lf, 3),
-        "HF":           round(hf, 3),
-        "LF_HF_Ratio":  round(lf_hf, 4),
+        "HR":       float(np.clip(72 - 0.1 * (age-25) + random.uniform(-5, 5), 50, 90)),
+        "SDNN":     max(10.0, sdnn),
+        "LF_ratio": lf / total_pow,
+        "HF_ratio": hf / total_pow,
     }
 
-def generate_tier2_features_24h():
-    """Generate 24h Feature Datasets using formula-based computation (FAST)."""
-    print("Generating Tier 2: 24h Feature Datasets (Formula-based)...")
-    window_sec = 30
-    total_sec = 24 * 3600
-    steps = int(total_sec / window_sec)  # 2880 steps
+def get_activity_at_sec(sec: int, scenario_list: list):
+    """Find activity modulation for current time."""
+    ref_min = int(CONFIG["start_time"].split(":")[0]) * 60
+    current_min = ref_min + (sec // 60)
     
-    scenarios = ["Normal", "Acute_Stress", "Chronic_Stress"]
-    noise_modes = [False, True]
+    for (t_s, t_e, act) in scenario_list:
+        s_m = int(t_s.split(":")[0])*60 + int(t_s.split(":")[1])
+        e_m = int(t_e.split(":")[0])*60 + int(t_e.split(":")[1])
+        if s_m <= current_min < e_m:
+            return ACTIVITIES[act]
+    return ACTIVITIES["normal_work"]
+
+def generate_rr_block(hr_target, sdnn_target, baseline, duration_sec):
+    """Generate RR internal for a block with spectral balance."""
+    rng = np.random.default_rng()
+    rr_list, t = [], 0.0
     
-    age = 25
-    gender = "M"
+    lf_ratio = baseline["LF_ratio"]
+    hf_ratio = baseline["HF_ratio"]
     
-    for sc in scenarios:
-        for is_noisy in noise_modes:
-            mode_str = "Noisy" if is_noisy else "Clean"
-            print(f"  -> Scenario: {sc} ({mode_str})")
+    while t < duration_sec:
+        rr_mean = 60.0 / hr_target
+        sdnn_s  = sdnn_target / 1000.0
+        
+        # Spec oscillations
+        lf = sdnn_s * lf_ratio * np.sin(2 * np.pi * 0.1 * t + rng.uniform(0, 2*np.pi))
+        hf = sdnn_s * hf_ratio * np.sin(2 * np.pi * 0.25 * t + rng.uniform(0, 2*np.pi))
+        ns = rng.normal(0, sdnn_s * 0.05)
+        
+        rr = float(np.clip(rr_mean + lf + hf + ns, 0.4, 1.5))
+        rr_list.append(rr)
+        t += rr
+    return np.array(rr_list, dtype=np.float32)
+
+def build_ecg_block(rr_intervals: np.ndarray, sr: int, noise_lvl: float):
+    """Neurokit simulation for a short block."""
+    rri_ms = (rr_intervals * 1000).astype(int)
+    try:
+        ecg = nk.ecg_simulate(rri=rri_ms, sampling_rate=sr, noise=noise_lvl)
+        return ecg.astype(np.float32)
+    except:
+        return np.random.normal(0, noise_lvl, int(np.sum(rr_intervals) * sr)).astype(np.float32)
+
+# ══════════════════════════════════════════════════════════════
+#   4. MAIN SIMULATION
+# ══════════════════════════════════════════════════════════════
+
+def main():
+    print(">>> Starting Block-based ECG Generation (HDF5)")
+    os.makedirs(CONFIG["output_dir"], exist_ok=True)
+    
+    h5_path   = os.path.join(CONFIG["output_dir"], CONFIG["h5_filename"])
+    gt_path   = os.path.join(CONFIG["output_dir"], CONFIG["gt_filename"])
+    meta_path = os.path.join(CONFIG["output_dir"], CONFIG["meta_filename"])
+
+    # Prepare Metadata & GT lists
+    meta_data = []
+    gt_rows   = []
+
+    with h5py.File(h5_path, 'w') as f:
+        sr = CONFIG["sampling_rate"]
+        duration_sec = CONFIG["duration_hours"] * 3600
+        n_blocks = duration_sec // CONFIG["block_sec"]
+
+        for s_idx in range(CONFIG["subjects_count"]):
+            subj_id = f"Subject_{s_idx+1:02d}"
+            age     = random.randint(*CONFIG["age_range"])
+            gender  = random.choice(["M", "F"])
+            sc_name = random.choice(list(SCENARIOS.keys()))
             
-            data_rows = []
+            print(f"  [{subj_id}] age={age}, {sc_name}")
             
-            for i in range(steps):
-                current_time_sec = i * window_sec
-                hour_float = current_time_sec / 3600.0
+            baseline = get_hrv_baseline(age)
+            is_noisy = (s_idx % 2 == 1)
+            
+            meta_data.append({
+                "subject_id": subj_id, 
+                "age": age, 
+                "gender": gender, 
+                "scenario": sc_name,
+                "baseline_HR": round(baseline["HR"], 1),
+                "baseline_SDNN": round(baseline["SDNN"], 2),
+                "noise_flag": is_noisy
+            })
+            grp = f.create_group(subj_id)
+            
+            # Since sampling is continuous, total samples = duration * sr
+            total_samples = duration_sec * sr
+            dset_ecg  = grp.create_dataset("ecg", (total_samples,), dtype='f4', compression="gzip")
+            dset_time = grp.create_dataset("time", (total_samples,), dtype='f4')
+            
+            current_ptr = 0
+            
+            noise_val = 0.01 * (3.0 if is_noisy else 1.0)
+            
+            for b in range(n_blocks):
+                t_base_sec = b * CONFIG["block_sec"]
                 
-                level = get_stress_level_at_hour(hour_float, sc)
-                feats = compute_features_for_level(level, age, gender, add_noise_jitter=is_noisy)
+                # Get modulation
+                hr_shift, sd_shift_pct, label = get_activity_at_sec(t_base_sec, SCENARIOS[sc_name])
                 
-                row = {
-                    "Time_Sec": current_time_sec,
-                    "Hour": round(hour_float, 4),
-                    "Stress_Level": level,
-                    "Scenario": sc,
-                    "Is_Noisy": is_noisy,
-                    **feats
-                }
-                data_rows.append(row)
+                hr_target   = baseline["HR"] + hr_shift
+                sdnn_target = baseline["SDNN"] * (1.0 + sd_shift_pct)
+                
+                # Generate Block
+                rr = generate_rr_block(hr_target, sdnn_target, baseline, CONFIG["block_sec"])
+                ecg_block = build_ecg_block(rr, sr, noise_val)
+                
+                # Trim or pad to fit block_sec exactly to keep time alignment simple
+                expected_samples = CONFIG["block_sec"] * sr
+                if len(ecg_block) > expected_samples:
+                    ecg_block = ecg_block[:expected_samples]
+                elif len(ecg_block) < expected_samples:
+                    ecg_block = np.pad(ecg_block, (0, expected_samples - len(ecg_block)), 'constant')
+                
+                # Write to HDF5
+                dset_ecg[current_ptr : current_ptr + expected_samples] = ecg_block
+                dset_time[current_ptr : current_ptr + expected_samples] = np.arange(current_ptr, current_ptr + expected_samples) / sr
+                
+                # Store Ground Truth per block (optional: can be per-second)
+                gt_rows.append({"subject_id": subj_id, "time_sec": t_base_sec, "stress_label": label})
+                
+                current_ptr += expected_samples
             
-            # Save
-            df = pd.DataFrame(data_rows)
-            fname = f"Dataset_Features_24h_{sc}_{mode_str}.csv"
-            df.to_csv(os.path.join(FEATURE_DIR, fname), index=False)
-            print(f"    Saved {fname} ({len(df)} rows)")
+    # Save CSVs
+    pd.DataFrame(meta_data).to_csv(meta_path, index=False)
+    pd.DataFrame(gt_rows).to_csv(gt_path, index=False)
+    
+    print(f"\nSimulation Complete.")
+    print(f"HDF5 Dataset: {h5_path}")
+    print(f"Metadata   : {meta_path}")
+    print(f"Ground Truth: {gt_path}")
 
 if __name__ == "__main__":
-    generate_tier1_raw_samples()
-    generate_tier2_features_24h()
-    print("All Generation Tasks Completed.")
-
+    random.seed(42)
+    np.random.seed(42)
+    main()

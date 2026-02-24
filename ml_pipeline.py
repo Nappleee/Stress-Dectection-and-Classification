@@ -8,7 +8,7 @@ Cấu trúc file:
   2. RandomForest        — Bagging + Feature Subsampling
   3. GradientBoosting    — Simplified XGBoost (Newton boosting)
   4. SVM                 — Kernel RBF, dual coordinate ascent
-  5. Evaluation helpers  — Accuracy, F1, Confusion Matrix
+  5. Evaluation helpers  — Accuracy, f1, Confusion Matrix
   6. Pipeline            — Train / Test / Report
 """
 
@@ -491,19 +491,14 @@ def plot_confusion_matrix(cm, labels, title, save_path):
 #   6. PIPELINE
 # ══════════════════════════════════════════════════════════════
 
-FEATURE_DIR  = "./data/raw/datagen/final_dataset/tier2_features_24h"
+DATA_DIR     = "./data/research_dataset"
 REPORT_DIR   = "./results"
+FEATURE_PATH = f"{DATA_DIR}/ecg_features.csv"
 
 # ─── Feature columns dùng cho training ───────────────────────
-# Bao gồm LF_HF_Ratio — chỉ số cân bằng thần kinh tự động quan trọng nhất
-FEATURE_COLS = ["HR_Extracted", "SDNN_Extracted", "RMSSD", "pNN50", "LF_HF_Ratio"]
+FEATURE_COLS = ["HR", "SDNN", "RMSSD", "pNN50", "LF_HF_Ratio"]
 
 os.makedirs(REPORT_DIR, exist_ok=True)
-
-
-def to_binary(level):
-    """Level 0-1 = No Stress (0), Level 2-5 = Stress (1)."""
-    return 0 if level <= 1 else 1
 
 
 def normalize(X_train, X_test):
@@ -514,31 +509,14 @@ def normalize(X_train, X_test):
     return (X_train - mn) / rng, (X_test - mn) / rng
 
 
-def load_csv(name):
-    path = os.path.join(FEATURE_DIR, name)
-    df   = pd.read_csv(path)
-    print(f"  Loaded {os.path.basename(path)} ({len(df)} rows)")
-    return df
-
-
-def subsample_df(df, frac=0.5, seed=42):
-    """Lấy frac% dòng ngẫu nhiên để giảm thời gian training.
-    
-    Lý do cần subsample:
-      - Strategy A: 3 scenarios × 2880 = 8640 train rows → subsample 50% = 4320
-      - Strategy B: 4 files   × 2880 = 11520 train rows → subsample 50% = 5760
-    Pure Python loops của from-scratch models chậm trên dữ liệu lớn.
-    Với 4000-5000 mẫu, kết quả vẫn đại diện tốt cho toàn bộ dataset.
-    """
+def subsample_df(df, frac=1.0, seed=42):
+    """Lấy frac% dòng ngẫu nhiên."""
+    if frac >= 1.0: return df
     return df.sample(frac=frac, random_state=seed).reset_index(drop=True)
 
 
-def run_experiment(strategy_name, train_df, test_df, results, train_frac=0.5, test_frac=0.8):
-    """Chạy cả 2 tasks × 3 models cho một chiến lược.
-    
-    train_frac: tỉ lệ subsample train (giảm tốc độ training)
-    test_frac : tỉ lệ subsample test  (giữ nhiều nhất có thể)
-    """
+def run_experiment(strategy_name, train_df, test_df, results, train_frac=1.0, test_frac=1.0):
+    """Chạy cả 2 tasks × 3 models cho một chiến lược."""
     train_df = subsample_df(train_df, frac=train_frac)
     test_df  = subsample_df(test_df,  frac=test_frac)
     print(f"  [Data] Train: {len(train_df)} rows | Test: {len(test_df)} rows")
@@ -546,13 +524,12 @@ def run_experiment(strategy_name, train_df, test_df, results, train_frac=0.5, te
     for task in ["binary", "multiclass"]:
         # Chuẩn bị nhãn
         if task == "binary":
-            y_train = train_df["Stress_Level"].apply(to_binary).values
-            y_test  = test_df["Stress_Level"].apply(to_binary).values
-            label_names = [0, 1]
+            # 0=Low, 1=Medium/High/VeryHigh
+            y_train = (train_df["stress_label"] > 0).astype(int).values
+            y_test  = (test_df["stress_label"] > 0).astype(int).values
         else:
-            y_train = train_df["Stress_Level"].values
-            y_test  = test_df["Stress_Level"].values
-            label_names = sorted(set(list(y_train) + list(y_test)))
+            y_train = train_df["stress_label"].values
+            y_test  = test_df["stress_label"].values
 
         X_train = train_df[FEATURE_COLS].values.astype(float)
         X_test  = test_df[FEATURE_COLS].values.astype(float)
@@ -565,25 +542,22 @@ def run_experiment(strategy_name, train_df, test_df, results, train_frac=0.5, te
         }
 
         for mname, model in models.items():
-            print(f"\n  [{strategy_name}] [{task}] [{mname}] — training...")
+            print(f"  [{strategy_name}] [{task}] [{mname}] — training...")
             try:
                 model.fit(X_train_n, y_train)
                 y_pred = model.predict(X_test_n)
 
                 acc = accuracy_score_custom(y_test, y_pred)
-                f1  = f1_score_custom(y_test, y_pred,
-                                      average="binary" if task == "binary" else "macro")
+                f1  = f1_score_custom(y_test, y_pred, average="macro")
                 cm, lbls = confusion_matrix_custom(y_test, y_pred)
 
-                print(f"    Accuracy : {acc:.4f}")
-                print(f"    F1 Score : {f1:.4f}")
-                print(f"    Confusion Matrix:\n{cm}")
+                print(f"    Accuracy : {acc:.4f}, F1: {f1:.4f}")
 
                 # Lưu ảnh confusion matrix
                 safe = strategy_name.replace(" ", "_").replace("→", "to").replace("+", "plus")
                 cm_path = os.path.join(REPORT_DIR, f"cm_{safe}_{task}_{mname}.png")
                 plot_confusion_matrix(cm, lbls,
-                                      f"{strategy_name}\n{task} | {mname}\nAcc={acc:.3f} F1={f1:.3f}",
+                                      f"{strategy_name}\n{task} | {mname}\nAcc={acc:.2f} F1={f1:.2f}",
                                       cm_path)
 
                 results.append({
@@ -592,10 +566,7 @@ def run_experiment(strategy_name, train_df, test_df, results, train_frac=0.5, te
                     "Model":       mname,
                     "Accuracy":    round(acc, 4),
                     "F1_Score":    round(f1, 4),
-                    "n_train":     len(y_train),
-                    "n_test":      len(y_test),
                 })
-
             except Exception as e:
                 print(f"    ERROR: {e}")
 
@@ -606,6 +577,7 @@ def plot_summary(df_results):
         fig, axes = plt.subplots(1, 2, figsize=(14, 5))
         for ax, task in zip(axes, ["binary", "multiclass"]):
             sub = df_results[df_results["Task"] == task]
+            if sub.empty: continue
             models    = sub["Model"].unique()
             strategies = sub["Strategy"].unique()
             x = np.arange(len(models))
@@ -632,53 +604,42 @@ def plot_summary(df_results):
 
 def main():
     print("=" * 60)
-    print("  ML Pipeline — Stress Classification (From Scratch)")
+    print("  ML Pipeline — Stress Classification (Research Dataset)")
     print("=" * 60)
 
-    print("\n[Loading datasets...]")
-    normal_clean  = load_csv("Dataset_Features_24h_Normal_Clean.csv")
-    normal_noisy  = load_csv("Dataset_Features_24h_Normal_Noisy.csv")
-    acute_clean   = load_csv("Dataset_Features_24h_Acute_Stress_Clean.csv")
-    acute_noisy   = load_csv("Dataset_Features_24h_Acute_Stress_Noisy.csv")
-    chronic_clean = load_csv("Dataset_Features_24h_Chronic_Stress_Clean.csv")
-    chronic_noisy = load_csv("Dataset_Features_24h_Chronic_Stress_Noisy.csv")
+    if not os.path.exists(FEATURE_PATH):
+        print(f"Error: Features file {FEATURE_PATH} not found. Run preprocess.py first.")
+        return
 
+    df = pd.read_csv(FEATURE_PATH)
+    print(f"Loaded {len(df)} windowed samples.")
     results = []
 
-    # ── Strategy A: Train=Clean, Test=Noisy ───────────────────
-    print("\n" + "─"*50)
-    print("Strategy A: Train = all Clean  →  Test = all Noisy")
-    print("  (Robustness: model học dữ liệu sạch, test với nhiễu)")
-    print("─"*50)
-    train_A = pd.concat([normal_clean, acute_clean, chronic_clean], ignore_index=True)
-    test_A  = pd.concat([normal_noisy, acute_noisy, chronic_noisy], ignore_index=True)
-    run_experiment("A: Clean→Noisy", train_A, test_A, results,
-                   train_frac=0.5, test_frac=0.8)
+    # Strategy A: Train on Clean, Test on Noisy
+    print("\nStrategy A: Clean → Noisy (Robustness)")
+    train_A = df[df['is_noisy'] == False]
+    test_A  = df[df['is_noisy'] == True]
+    run_experiment("A: Clean→Noisy", train_A, test_A, results, train_frac=1.0, test_frac=1.0)
 
-    # ── Strategy B: Train=Normal+Acute, Test=Chronic ──────────
-    print("\n" + "─"*50)
-    print("Strategy B: Train = Normal + Acute  →  Test = Chronic")
-    print("  (Generalization: model chưa từng thấy chronic stress)")
-    print("─"*50)
-    train_B = pd.concat([normal_clean, normal_noisy,
-                         acute_clean,  acute_noisy], ignore_index=True)
-    test_B  = pd.concat([chronic_clean, chronic_noisy], ignore_index=True)
-    run_experiment("B: Normal+Acute→Chronic", train_B, test_B, results,
-                   train_frac=0.4, test_frac=0.8)
+    # Strategy B: Train Office/Physical, Test HighPressure
+    print("\nStrategy B: Normal/Active → HighPressure (Generalization)")
+    train_B = df[df['scenario'].isin(['office_worker', 'physical_worker'])]
+    test_B  = df[df['scenario'] == 'high_pressure']
+    run_experiment("B: Gen→Stress", train_B, test_B, results, train_frac=1.0, test_frac=1.0)
 
-    # ── Lưu kết quả ───────────────────────────────────────────
-    df_results  = pd.DataFrame(results)
+    # Save results
+    df_res = pd.DataFrame(results)
     report_path = os.path.join(REPORT_DIR, "ml_results_summary.csv")
-    df_results.to_csv(report_path, index=False)
+    df_res.to_csv(report_path, index=False)
 
-    plot_summary(df_results)
+    plot_summary(df_res)
 
     print("\n" + "=" * 60)
     print("  SUMMARY")
     print("=" * 60)
-    print(df_results[["Strategy","Task","Model","Accuracy","F1_Score"]].to_string(index=False))
-    print(f"\n✅ Results CSV: {report_path}")
-    print(f"✅ Confusion matrices & charts: {REPORT_DIR}/")
+    if not df_res.empty:
+        print(df_res.groupby(["Strategy", "Task"])["Accuracy"].mean())
+    print(f"\n✅ Results: {REPORT_DIR}/")
 
 
 if __name__ == "__main__":
