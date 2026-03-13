@@ -1,0 +1,4 @@
+Label,Num_Files,Total_Duration_Seconds,Total_Duration_Minutes,Total_Samples,Avg_Duration_Per_File
+0,23,5897,98.29,1509792,256.41
+1,13,3333,55.56,853344,256.41
+2,10,2562,42.72,656126,256.3

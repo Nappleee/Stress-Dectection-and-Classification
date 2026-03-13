@@ -1,0 +1,84 @@
+{
+  "summary": {
+    "total_files": 46,
+    "total_duration_seconds": 11793.8125,
+    "total_duration_minutes": 196.56354166666668,
+    "total_samples": 3019262,
+    "csv_source": "data/hrv_features_label.csv"
+  },
+  "by_label": {
+    "0": {
+      "num_files": 23,
+      "total_duration_seconds": 5897.53515625,
+      "total_samples": 1509792,
+      "total_duration_minutes": 98.29225260416666,
+      "avg_duration_per_file": 256.41457201086956,
+      "files": [
+        "hr60.csv",
+        "hr61.csv",
+        "hr62.csv",
+        "hr63.csv",
+        "hr64.csv",
+        "hr65.csv",
+        "hr66.csv",
+        "hr67.csv",
+        "hr68.csv",
+        "hr69.csv",
+        "hr70.csv",
+        "hr71.csv",
+        "hr72.csv",
+        "hr73.csv",
+        "hr74.csv",
+        "hr75.csv",
+        "hr76.csv",
+        "hr77.csv",
+        "hr78.csv",
+        "hr79.csv",
+        "hr80.csv",
+        "hr81.csv",
+        "hr82.csv"
+      ]
+    },
+    "1": {
+      "num_files": 13,
+      "total_duration_seconds": 3333.32421875,
+      "total_samples": 853344,
+      "total_duration_minutes": 55.55540364583333,
+      "avg_duration_per_file": 256.40955528846155,
+      "files": [
+        "hr83.csv",
+        "hr84.csv",
+        "hr85.csv",
+        "hr86.csv",
+        "hr87.csv",
+        "hr88.csv",
+        "hr89.csv",
+        "hr90.csv",
+        "hr91.csv",
+        "hr92.csv",
+        "hr93.csv",
+        "hr94.csv",
+        "hr95.csv"
+      ]
+    },
+    "2": {
+      "num_files": 10,
+      "total_duration_seconds": 2562.953125,
+      "total_samples": 656126,
+      "total_duration_minutes": 42.715885416666666,
+      "avg_duration_per_file": 256.2953125,
+      "files": [
+        "hr100.csv",
+        "hr101.csv",
+        "hr102.csv",
+        "hr103.csv",
+        "hr104.csv",
+        "hr105.csv",
+        "hr96.csv",
+        "hr97.csv",
+        "hr98.csv",
+        "hr99.csv"
+      ]
+    }
+  }
+}
