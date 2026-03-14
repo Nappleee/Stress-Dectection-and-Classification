@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import os
 import random
-from typing import List, Dict
+from typing import List, Dict, Union
 
 class ECGAdvancedConcatenator:
     """
@@ -314,6 +314,60 @@ class ECGAdvancedConcatenator:
         print(f"✅ Combined: {len(combined)} rows\n")
         
         return combined
+    
+    def create_hourly_sequences(self, hour_label_map: Dict[int, Union[int, Dict[int, int]]], num_variations: int = 2, output_base_dir: str = 'data/sequences_by_hour'):
+        """
+        Create hourly sequences from 6 AM to 11 PM (hours 6-23).
+        hour_label_map: {hour: label} where label is int for single label or dict for multi-label config {label: num_files}
+        num_variations: Number of variations per hour.
+        """
+        hours = list(range(6, 24))  # 6 AM to 11 PM
+        if not os.path.exists(output_base_dir):
+            os.makedirs(output_base_dir)
+        
+        global_time_offset = 0  # To keep time continuous across all sequences
+        
+        for hour in hours:
+            hour_dir = f"{output_base_dir}/hour_{hour:02d}"
+            os.makedirs(hour_dir, exist_ok=True)
+            
+            config = hour_label_map.get(hour, 0)
+            print(f"Creating {num_variations} variations for hour {hour} (Config: {config})")
+            
+            for var in range(1, num_variations + 1):
+                if isinstance(config, int):
+                    # Single label
+                    seq_df = self.concatenate_preserve_time(label=config, duration_minutes=60, random_order=True)
+                elif isinstance(config, dict):
+                    # Multi-label
+                    sequences = self.create_multi_label_sequences(
+                        label_configs=config, 
+                        num_sequences=1, 
+                        target_duration_minutes=60, 
+                        random_order=True
+                    )
+                    seq_df = sequences[0] if sequences else pd.DataFrame()
+                else:
+                    print(f"Invalid config for hour {hour}: {config}")
+                    continue
+                
+                if seq_df.empty:
+                    print(f"  Skipping hour {hour} v{var}: no data")
+                    continue
+                
+                # Shift Time to be continuous globally
+                if 'Time' in seq_df.columns:
+                    seq_df['Time'] += global_time_offset
+                    global_time_offset = seq_df['Time'].max()
+                
+                seq_df['Sequence_ID'] = f"hour_{hour}_v{var}"
+                
+                filename = f"{hour_dir}/v{var}.csv"
+                seq_df.to_csv(filename, index=False)
+                print(f"  Saved {filename}: {len(seq_df)} rows, Time: {seq_df['Time'].min():.0f}s → {seq_df['Time'].max():.0f}s")
+        
+        print(f"\n✅ Created hourly sequences in {output_base_dir}/\n")
+    
     def save_to_csv(self, df: pd.DataFrame, output_file: str):
         """Save dataframe to CSV file"""
         df.to_csv(output_file, index=False)
@@ -343,51 +397,30 @@ if __name__ == "__main__":
             data_dir='data/raw_gen'
         )
         
-        # ========== EXAMPLE 1: Single Label 30 min ==========
+        # ========== HOURLY SEQUENCES ==========
         print("\n" + "=" * 80)
-        print("EXAMPLE 1: Create 30min sequence from Label 0")
+        print("CREATING HOURLY SEQUENCES (6 AM - 11 PM)")
         print("=" * 80)
         
-        df_label0 = concat.concatenate_preserve_time(
-            label=0,
-            duration_minutes=30,
-            random_order=True
+        # Define stress levels by hour
+        hour_label_map = {
+            # Low stress: label 0
+            6: 0, 7: 0, 8: 0, 12: 0, 13: 0, 22: 0, 23: 0,
+            # Medium stress: mix 0 & 1
+            9: {0: 10, 1: 5}, 10: {0: 10, 1: 5}, 11: {0: 10, 1: 5}, 
+            14: {0: 10, 1: 5}, 15: {0: 10, 1: 5}, 16: {0: 10, 1: 5},
+            # High stress: mix 1 & 2
+            17: {1: 5, 2: 10}, 18: {1: 5, 2: 10}, 19: {1: 5, 2: 10}, 
+            20: {1: 5, 2: 10}, 21: {1: 5, 2: 10}
+        }
+        
+        concat.create_hourly_sequences(
+            hour_label_map=hour_label_map,
+            num_variations=2,
+            output_base_dir='data/sequences_by_hour'
         )
         
-        concat.display_sequence_info(df_label0, seq_id=1)
-        concat.save_to_csv(df_label0, 'output_label0_30min.csv')
-        
-        # ========== EXAMPLE 2: Multi-label sequences ==========
-        print("\n" + "=" * 80)
-        print("EXAMPLE 2: Create 5 sequences (Label0 + Label1)")
-        print("=" * 80)
-        
-        sequences = concat.create_multi_label_sequences(
-            label_configs={0: 10, 1: 10},  # 10 files label0, then 10 files label1
-            num_sequences=5,
-            target_duration_minutes=30.0,
-            random_order=True
-        )
-        
-        for idx, seq in enumerate(sequences[:2]):  # Show first 2
-            concat.display_sequence_info(seq, seq_id=idx)
-        
-        concat.save_sequences(sequences, output_dir='sequences_multi')
-        
-        # ========== EXAMPLE 3: All 3 labels ==========
-        print("\n" + "=" * 80)
-        print("EXAMPLE 3: Create 10 sequences (All 3 labels mixed)")
-        print("=" * 80)
-        
-        sequences_all = concat.create_multi_label_sequences(
-            label_configs={0: 5, 1: 5, 2: 3},
-            num_sequences=10,
-            random_order=True
-        )
-        
-        concat.save_sequences(sequences_all, output_dir='sequences_all')
-        
-        print("✅ ALL DONE!\n")
+        print("✅ HOURLY SEQUENCES CREATED!\n")
         
     except Exception as e:
         print(f"\n❌ ERROR: {str(e)}")
