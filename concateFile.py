@@ -2,13 +2,11 @@ import pandas as pd
 import numpy as np
 import os
 import random
-from typing import List, Dict, Tuple
+from typing import List, Dict
 
 class ECGAdvancedConcatenator:
     """
-    Advanced ECG Concatenator với:
-    1. Preserve TIME khi nối files
-    2. Nối sequences từ các label khác nhau
+    Advanced ECG Concatenator with proper column handling
     """
     
     def __init__(self, csv_label_file: str, data_dir: str):
@@ -18,22 +16,40 @@ class ECGAdvancedConcatenator:
         self.file_label_map = {}
         self.label_data = {}
         
+        # Validate files
+        if not os.path.exists(csv_label_file):
+            raise FileNotFoundError(f"❌ CSV file not found: {csv_label_file}")
+        
+        if not os.path.exists(data_dir):
+            raise FileNotFoundError(f"❌ Data directory not found: {data_dir}")
+        
         self._load_label_mapping()
     
     def _load_label_mapping(self):
-        """Load label mapping từ CSV"""
+        """Load label mapping with proper column cleanup"""
         print("📂 Loading label mapping...")
         df_labels = pd.read_csv(self.csv_label_file)
         
+        # ✅ FIX: Strip spaces from ALL column names
+        df_labels.columns = df_labels.columns.str.strip()
+        
+        print(f"✅ Cleaned columns: {list(df_labels.columns)}\n")
+        
         for idx, row in df_labels.iterrows():
-            filename = row['File']
-            label = row['Label']
+            filename = row['File'].strip()
+            label = row['Label']  # Now clean!
             self.file_label_map[filename] = label
         
         print(f"✅ Loaded {len(self.file_label_map)} files\n")
+        
+        # Display sample
+        print(f"Sample mapping:")
+        for i, (fname, lbl) in enumerate(list(self.file_label_map.items())[:3]):
+            print(f"  {fname} → Label {lbl}")
+        print()
     
     def _load_label_files(self, label: int):
-        """Load tất cả files của một label"""
+        """Load files of a specific label"""
         if label in self.label_data:
             return
         
@@ -43,62 +59,61 @@ class ECGAdvancedConcatenator:
                        if self.file_label_map[f] == label]
         label_files = sorted(label_files)
         
+        if len(label_files) == 0:
+            print(f"⚠️  No files found for Label {label}!")
+            return
+        
         label_data = {}
         for filename in label_files:
             filepath = os.path.join(self.data_dir, filename)
-            df = pd.read_csv(filepath)
-            label_data[filename] = df
-            print(f"  ✅ {filename}: {len(df)} rows")
+            try:
+                df = pd.read_csv(filepath)
+                # Also clean data file columns
+                df.columns = df.columns.str.strip()
+                label_data[filename] = df
+                print(f"  ✅ {filename}: {len(df)} rows")
+            except FileNotFoundError:
+                print(f"  ❌ {filename}: NOT FOUND!")
+            except Exception as e:
+                print(f"  ❌ {filename}: ERROR - {str(e)}")
         
         self.label_data[label] = label_data
         print()
     
     def _get_duration_from_dataframe(self, df: pd.DataFrame) -> float:
-        """Calculate duration from dataframe"""
+        """Calculate duration from Time column"""
         if 'Time' in df.columns:
             return df['Time'].max() - df['Time'].min()
         else:
             return len(df)
-    
-    # ============================================================
-    # METHOD 1: Concatenate files bảo tồn TIME
-    # ============================================================
     
     def concatenate_preserve_time(self, 
                                   label: int, 
                                   duration_minutes: float,
                                   random_order: bool = True) -> pd.DataFrame:
         """
-        Nối files của một label NHƯNG bảo tồn TIME column
-        (TIME không reset về 0, liên tục tăng)
-        
-        Args:
-            label (int): Label number
-            duration_minutes (float): Target duration in minutes
-            random_order (bool): Shuffle files
-            
-        Returns:
-            pd.DataFrame: Concatenated data with preserved TIME
+        Concatenate files while preserving TIME column (no reset)
         """
         
         self._load_label_files(label)
+        
+        if label not in self.label_data or len(self.label_data[label]) == 0:
+            raise ValueError(f"No data found for Label {label}")
         
         target_duration = duration_minutes * 60
         label_files = list(self.label_data[label].keys())
         
         print("=" * 80)
-        print(f"🔗 CONCATENATING {duration_minutes:.0f}min LABEL {label} (PRESERVE TIME)")
+        print(f"🔗 CONCATENATING {duration_minutes:.0f}min LABEL {label}")
         print("=" * 80)
-        print(f"Target duration: {target_duration:.0f}s\n")
+        print(f"Target: {target_duration:.0f}s ({duration_minutes:.1f} min)\n")
         
-        # Shuffle if needed
         if random_order:
             shuffled_files = label_files.copy()
             random.shuffle(shuffled_files)
         else:
             shuffled_files = sorted(label_files)
         
-        # Concatenate with TIME adjustment
         concatenated_data = []
         concatenated_files = []
         current_duration = 0
@@ -114,13 +129,12 @@ class ECGAdvancedConcatenator:
             df = self.label_data[label][filename].copy()
             file_duration = self._get_duration_from_dataframe(df)
             
-            # PRESERVE TIME: Adjust TIME column
+            # Preserve TIME: adjust so it's continuous
             if 'Time' in df.columns:
-                # Get original time range
                 original_time_min = df['Time'].min()
                 original_time_max = df['Time'].max()
                 
-                # Shift TIME to be continuous
+                # Shift TIME to continue from previous offset
                 df['Time'] = df['Time'] - original_time_min + global_time_offset
                 
                 # Update offset for next file
@@ -134,57 +148,51 @@ class ECGAdvancedConcatenator:
             concatenated_files.append(filename)
             current_duration += file_duration
             
-            print(f"  {filename:25s}: +{file_duration:8.2f}s | Time: {df['Time'].min():8.2f}s → {df['Time'].max():8.2f}s")
+            print(f"  {filename:30s}: +{file_duration:8.2f}s | Time: {df['Time'].min():8.2f}s → {df['Time'].max():8.2f}s")
         
         print("-" * 80)
         
-        # Combine all dataframes
+        # Combine all
         combined_df = pd.concat(concatenated_data, ignore_index=True)
         
         print(f"\n✅ Concatenation Complete!")
         print(f"   Files: {len(concatenated_files)}")
         print(f"   Total rows: {len(combined_df)}")
         print(f"   Total duration: {combined_df['Time'].max():.2f}s ({combined_df['Time'].max()/60:.2f} min)")
-        print(f"   Time preserved: {combined_df['Time'].min():.2f}s → {combined_df['Time'].max():.2f}s\n")
+        print(f"   Time range: {combined_df['Time'].min():.2f}s → {combined_df['Time'].max():.2f}s\n")
         
-        # Add final metadata
         combined_df['Label'] = label
         combined_df['Sequence_ID'] = 0
         
+        # Filter columns to keep only essential ones
+        columns_to_keep = ['Time', 'Voltage', 'Peak', 'Label']
+        combined_df = combined_df[columns_to_keep]
+        
+        # Trim to target duration if exceeded
+        if combined_df['Time'].max() > target_duration:
+            combined_df = combined_df[combined_df['Time'] <= target_duration].copy()
+            print(f"   Trimmed to: {combined_df['Time'].max():.2f}s ({combined_df['Time'].max()/60:.2f} min)\n")
+        
         return combined_df
-    
-    # ============================================================
-    # METHOD 2: Concatenate sequences từ multiple labels
-    # ============================================================
     
     def create_multi_label_sequences(self,
                                     label_configs: Dict[int, int],
                                     num_sequences: int,
+                                    target_duration_minutes: float = 30.0,
                                     random_order: bool = True) -> List[pd.DataFrame]:
         """
-        Tạo multiple sequences bằng cách nối từng segment từ các label khác nhau
-        
-        Ví dụ:
-        - Create 10 sequences
-        - Mỗi sequence: 10 records từ Label 0 + 10 records từ Label 1 + 5 records từ Label 2
-        - TIME liên tục (không reset)
-        - Label column chỉ ra stress level của từng phần
-        
-        Args:
-            label_configs (Dict[int, int]): {label: num_files_per_sequence}
-                                           Example: {0: 10, 1: 10, 2: 5}
-            num_sequences (int): Số sequences cần tạo
-            random_order (bool): Shuffle files
-            
-        Returns:
-            List[pd.DataFrame]: List of sequences
+        Create multiple sequences by concatenating different labels
+        Example: {0: 10, 1: 10, 2: 5} = 10 files label0 + 10 files label1 + 5 files label2
         """
+        
+        target_duration = target_duration_minutes * 60
         
         print("=" * 80)
         print(f"🔗 CREATING {num_sequences} MULTI-LABEL SEQUENCES")
         print("=" * 80)
         print(f"Label config: {label_configs}")
-        print(f"Number of sequences: {num_sequences}\n")
+        print(f"Sequences: {num_sequences}")
+        print(f"Target duration: {target_duration:.0f}s ({target_duration_minutes:.1f} min)\n")
         
         # Load all label files
         for label in label_configs.keys():
@@ -193,7 +201,7 @@ class ECGAdvancedConcatenator:
         sequences = []
         
         for seq_num in range(num_sequences):
-            print(f"\n📌 Creating Sequence {seq_num + 1}/{num_sequences}")
+            print(f"\n📌 Sequence {seq_num + 1}/{num_sequences}")
             print("-" * 80)
             
             sequence_data = []
@@ -204,16 +212,15 @@ class ECGAdvancedConcatenator:
             for label in sorted(label_configs.keys()):
                 num_files = label_configs[label]
                 
-                # Get random files from this label
                 label_files = list(self.label_data[label].keys())
                 selected_files = random.sample(label_files, min(num_files, len(label_files)))
                 
-                print(f"  Label {label}: {num_files} files")
+                print(f"  Label {label}: {len(selected_files)} files")
                 
                 for file_idx, filename in enumerate(selected_files):
                     df = self.label_data[label][filename].copy()
                     
-                    # PRESERVE TIME
+                    # Preserve TIME
                     if 'Time' in df.columns:
                         original_time_min = df['Time'].min()
                         original_time_max = df['Time'].max()
@@ -225,7 +232,7 @@ class ECGAdvancedConcatenator:
                     # Add metadata
                     df['Segment_Index'] = file_idx
                     df['Segment_File'] = filename
-                    df['Label'] = label  # Stress level
+                    df['Label'] = label
                     df['Label_Sequence'] = current_label_in_seq
                     
                     sequence_data.append(df)
@@ -236,6 +243,16 @@ class ECGAdvancedConcatenator:
             if sequence_data:
                 combined_seq = pd.concat(sequence_data, ignore_index=True)
                 combined_seq['Sequence_ID'] = seq_num
+                
+                # Filter columns to keep only essential ones
+                columns_to_keep = ['Time', 'Voltage', 'Peak', 'Label']
+                combined_seq = combined_seq[columns_to_keep]
+                
+                # Trim to target duration if exceeded
+                if combined_seq['Time'].max() > target_duration:
+                    combined_seq = combined_seq[combined_seq['Time'] <= target_duration].copy()
+                    print(f"  Trimmed to: {combined_seq['Time'].max():.0f}s ({combined_seq['Time'].max()/60:.1f} min)")
+                
                 sequences.append(combined_seq)
                 
                 print(f"  ✅ Rows: {len(combined_seq)} | Time: {combined_seq['Time'].min():.0f}s → {combined_seq['Time'].max():.0f}s ({combined_seq['Time'].max()/60:.1f} min)")
@@ -244,57 +261,52 @@ class ECGAdvancedConcatenator:
         
         return sequences
     
-    # ============================================================
-    # UTILITIES
-    # ============================================================
-    
     def display_sequence_info(self, df: pd.DataFrame, seq_id: int = None):
-        """Display detailed info về sequence"""
+        """Display sequence information"""
         print("=" * 80)
-        print(f"📊 SEQUENCE INFO{f' #{seq_id}' if seq_id else ''}")
+        print(f"📊 SEQUENCE INFO{f' #{seq_id}' if seq_id is not None else ''}")
         print("=" * 80)
         
         print(f"\nShape: {df.shape}")
         print(f"Columns: {list(df.columns)}")
         
         if 'Time' in df.columns:
-            print(f"\nTime range: {df['Time'].min():.2f}s → {df['Time'].max():.2f}s ({df['Time'].max()/60:.2f} min)")
-            print(f"Time preserved: {'✅ YES' if df['Time'].min() >= 0 and df['Time'].is_monotonic_increasing else '❌ NO'}")
+            print(f"\nTime: {df['Time'].min():.2f}s → {df['Time'].max():.2f}s ({df['Time'].max()/60:.2f} min)")
+            is_monotonic = df['Time'].is_monotonic_increasing
+            print(f"Time preserved: {'✅ YES' if is_monotonic else '❌ NO'}")
         
         if 'Label' in df.columns:
             print(f"\nLabel distribution:")
             print(df['Label'].value_counts().sort_index())
         
         if 'HR(bpm)' in df.columns:
-            print(f"\nHR range: {df['HR(bpm)'].min():.1f} - {df['HR(bpm)'].max():.1f} bpm (avg: {df['HR(bpm)'].mean():.1f})")
+            print(f"\nHR: {df['HR(bpm)'].min():.1f} - {df['HR(bpm)'].max():.1f} bpm (avg: {df['HR(bpm)'].mean():.1f})")
         
         if 'Segment_File' in df.columns:
             print(f"\nFiles used: {df['Segment_File'].nunique()}")
-            print(f"  {df['Segment_File'].unique()}")
         
         print()
     
     def save_sequences(self, sequences: List[pd.DataFrame], output_dir: str = 'sequences'):
-        """Save tất cả sequences"""
+        """Save all sequences to CSV files"""
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
         
         print(f"💾 Saving {len(sequences)} sequences to {output_dir}/")
-        
-        output_files = []
+        print("-" * 80)
         
         for seq_id, df in enumerate(sequences):
             filename = f"{output_dir}/sequence_{seq_id:03d}.csv"
             df.to_csv(filename, index=False)
-            output_files.append(filename)
-            print(f"  ✅ {filename} ({len(df)} rows)")
+            file_size = os.path.getsize(filename) / (1024 * 1024)
+            print(f"  ✅ sequence_{seq_id:03d}.csv ({len(df)} rows, {file_size:.2f} MB)")
         
-        print(f"\n✅ Saved {len(sequences)} sequences\n")
+        print(f"\n✅ Saved {len(sequences)} sequences!\n")
         
-        return output_files
+        return [f"{output_dir}/sequence_{i:03d}.csv" for i in range(len(sequences))]
     
     def combine_sequences(self, sequences: List[pd.DataFrame]) -> pd.DataFrame:
-        """Combine tất cả sequences vào 1 dataframe"""
+        """Combine all sequences into one dataframe"""
         print("🔗 Combining all sequences...")
         
         combined = pd.concat(sequences, ignore_index=True)
@@ -302,110 +314,82 @@ class ECGAdvancedConcatenator:
         print(f"✅ Combined: {len(combined)} rows\n")
         
         return combined
-
+    def save_to_csv(self, df: pd.DataFrame, output_file: str):
+        """Save dataframe to CSV file"""
+        df.to_csv(output_file, index=False)
+        file_size_mb = os.path.getsize(output_file) / (1024 * 1024)
+        
+        print("=" * 80)
+        print(f"✅ SAVED: {output_file}")
+        print("=" * 80)
+        print(f"Rows: {len(df)}")
+        print(f"Columns: {len(df.columns)}")
+        print(f"File size: {file_size_mb:.2f} MB\n")
 
 # ============================================================
-# USAGE EXAMPLES
+# MAIN - USAGE EXAMPLES
 # ============================================================
 
 if __name__ == "__main__":
     
-    # Initialize
-    concat = ECGAdvancedConcatenator(
-        csv_label_file='data/hrv_features_label.csv',
-        data_dir='data/raw_gen'
-    )
-    
-    # ========== EXAMPLE 1: Preserve TIME khi nối files ==========
-    print("\n" + "=" * 80)
-    print("EXAMPLE 1: Concatenate 30min Label 0 with PRESERVED TIME")
-    print("=" * 80)
-    
-    df_preserved = concat.concatenate_preserve_time(
-        label=0,
-        duration_minutes=30,
-        random_order=True
-    )
-    
-    concat.display_sequence_info(df_preserved, seq_id=1)
-    df_preserved.to_csv('sequence_label0_preserved_time.csv', index=False)
-    
-    # ========== EXAMPLE 2: Tạo 5 sequences từ Label 0 riêng ==========
-    print("\n" + "=" * 80)
-    print("EXAMPLE 2: Create 5 sequences từ Label 0 only")
-    print("=" * 80)
-    
-    sequences_label0 = concat.create_multi_label_sequences(
-        label_configs={0: 6},  # 6 files từ label 0 per sequence
-        num_sequences=5,
-        random_order=True
-    )
-    
-    for idx, seq in enumerate(sequences_label0):
-        concat.display_sequence_info(seq, seq_id=idx)
-    
-    concat.save_sequences(sequences_label0, output_dir='sequences_label0')
-    
-    # ========== EXAMPLE 3: Create 10 sequences từ Label 1 ==========
-    print("\n" + "=" * 80)
-    print("EXAMPLE 3: Create 10 sequences từ Label 1 only")
-    print("=" * 80)
-    
-    sequences_label1 = concat.create_multi_label_sequences(
-        label_configs={1: 5},  # 5 files từ label 1 per sequence
-        num_sequences=10,
-        random_order=True
-    )
-    
-    for idx, seq in enumerate(sequences_label1[:3]):  # Show first 3
-        concat.display_sequence_info(seq, seq_id=idx)
-    print(f"... ({len(sequences_label1) - 3} more sequences)")
-    
-    concat.save_sequences(sequences_label1, output_dir='sequences_label1')
-    
-    # ========== EXAMPLE 4: Create sequences nối từ Label 0 + Label 1 ==========
-    print("\n" + "=" * 80)
-    print("EXAMPLE 4: Create 10 sequences: Label0 + Label1 (MIX)")
-    print("=" * 80)
-    
-    sequences_mixed = concat.create_multi_label_sequences(
-        label_configs={0: 10, 1: 10},  # 10 files label 0, then 10 files label 1
-        num_sequences=10,
-        random_order=True
-    )
-    
-    for idx, seq in enumerate(sequences_mixed[:2]):  # Show first 2
-        concat.display_sequence_info(seq, seq_id=idx)
-    print(f"... ({len(sequences_mixed) - 2} more sequences)")
-    
-    concat.save_sequences(sequences_mixed, output_dir='sequences_mixed_0_1')
-    
-    # ========== EXAMPLE 5: Create sequences từ TẤT CẢ 3 labels ==========
-    print("\n" + "=" * 80)
-    print("EXAMPLE 5: Create 5 sequences: Label0 + Label1 + Label2 (FULL)")
-    print("=" * 80)
-    
-    sequences_full = concat.create_multi_label_sequences(
-        label_configs={0: 5, 1: 5, 2: 3},  # Mix từ 3 labels
-        num_sequences=5,
-        random_order=True
-    )
-    
-    for idx, seq in enumerate(sequences_full):
-        concat.display_sequence_info(seq, seq_id=idx)
-    
-    concat.save_sequences(sequences_full, output_dir='sequences_full_mix')
-    
-    # ========== EXAMPLE 6: Combine tất cả sequences ==========
-    print("\n" + "=" * 80)
-    print("EXAMPLE 6: Combine all sequences")
-    print("=" * 80)
-    
-    all_sequences = sequences_label0 + sequences_label1 + sequences_mixed + sequences_full
-    combined_all = concat.combine_sequences(all_sequences)
-    
-    print(f"Total rows: {len(combined_all)}")
-    print(f"Label distribution:")
-    print(combined_all['Label'].value_counts().sort_index())
-    
-    combined_all.to_csv('all_sequences_combined.csv', index=False)
+    try:
+        print("=" * 80)
+        print("🚀 ECG CONCATENATOR - STRESS CLASSIFICATION")
+        print("=" * 80 + "\n")
+        
+        # ========== INITIALIZE ==========
+        concat = ECGAdvancedConcatenator(
+            csv_label_file='data/hrv_features_label.csv',
+            data_dir='data/raw_gen'
+        )
+        
+        # ========== EXAMPLE 1: Single Label 30 min ==========
+        print("\n" + "=" * 80)
+        print("EXAMPLE 1: Create 30min sequence from Label 0")
+        print("=" * 80)
+        
+        df_label0 = concat.concatenate_preserve_time(
+            label=0,
+            duration_minutes=30,
+            random_order=True
+        )
+        
+        concat.display_sequence_info(df_label0, seq_id=1)
+        concat.save_to_csv(df_label0, 'output_label0_30min.csv')
+        
+        # ========== EXAMPLE 2: Multi-label sequences ==========
+        print("\n" + "=" * 80)
+        print("EXAMPLE 2: Create 5 sequences (Label0 + Label1)")
+        print("=" * 80)
+        
+        sequences = concat.create_multi_label_sequences(
+            label_configs={0: 10, 1: 10},  # 10 files label0, then 10 files label1
+            num_sequences=5,
+            target_duration_minutes=30.0,
+            random_order=True
+        )
+        
+        for idx, seq in enumerate(sequences[:2]):  # Show first 2
+            concat.display_sequence_info(seq, seq_id=idx)
+        
+        concat.save_sequences(sequences, output_dir='sequences_multi')
+        
+        # ========== EXAMPLE 3: All 3 labels ==========
+        print("\n" + "=" * 80)
+        print("EXAMPLE 3: Create 10 sequences (All 3 labels mixed)")
+        print("=" * 80)
+        
+        sequences_all = concat.create_multi_label_sequences(
+            label_configs={0: 5, 1: 5, 2: 3},
+            num_sequences=10,
+            random_order=True
+        )
+        
+        concat.save_sequences(sequences_all, output_dir='sequences_all')
+        
+        print("✅ ALL DONE!\n")
+        
+    except Exception as e:
+        print(f"\n❌ ERROR: {str(e)}")
+        import traceback
+        traceback.print_exc()
