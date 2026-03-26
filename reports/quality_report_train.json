@@ -1,0 +1,12 @@
+{
+  "n_samples":"2389",
+  "n_features_total":"27",
+  "n_unique_source_files":"240",
+  "label_distribution":"{0: 591, 1: 608, 2: 604, 3: 586}",
+  "imbalance_ratio_max_to_min":"1.0375426621160408",
+  "unique_sources_per_label":"{0: 60, 1: 60, 2: 60, 3: 60}",
+  "top10_null_ratio":"{'window_id': 0.0, 'label': 0.0, 'mean_rr_ms': 0.0, 'median_rr_ms': 0.0, 'sdnn_ms': 0.0, 'std_rr_ms': 0.0, 'rmssd_ms': 0.0, 'pnn50': 0.0, 'heart_rate_bpm': 0.0, 'n_peaks': 0.0}",
+  "train_samples_for_modeling":"1917",
+  "train_class_distribution_for_modeling":"{0: 484, 1: 493, 2: 471, 3: 469}",
+  "synthetic_samples_added":"0"
+}
