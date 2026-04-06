@@ -2,3 +2,8 @@ pandas
 numpy
 scikit-learn
 seaborn
+matplotlib
+joblib
+openpyxl
+xlrd
+torch
