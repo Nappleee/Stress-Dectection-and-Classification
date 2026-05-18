@@ -7,3 +7,6 @@ joblib
 openpyxl
 xlrd
 torch
+jupyter
+ipykernel
+nbformat
