@@ -20,7 +20,7 @@ Dự án này là khóa luận về xác định và phân loại mức độ st
 1) Tạo môi trường ảo
    - python -m venv .venv
 2) Kích hoạt môi trường
-   - .\.venv\Scripts\Activate.ps1
+   - .venv\Scripts\Activate.ps1
 3) Cài đặt thư viện
    - pip install -r requirements.txt
 
