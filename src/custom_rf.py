@@ -31,16 +31,26 @@ class Node:
         self.value = value  # leaf
 
 class DecisionTree:
-    def __init__(self, max_depth=10, min_samples_split=2, max_features=None):
+    def __init__(
+        self,
+        max_depth=10,
+        min_samples_split=2,
+        min_samples_leaf=1,
+        max_features=None,
+        max_leaf_nodes=None,
+    ):
         self.max_depth = max_depth
         self.min_samples_split = min_samples_split
+        self.min_samples_leaf = min_samples_leaf
         self.max_features = max_features
+        self.max_leaf_nodes = max_leaf_nodes
 
     def fit(self, X, y):
         X = np.asarray(X)
         y = np.asarray(y)
         self.n_classes = len(np.unique(y))
         self.n_features = X.shape[1]
+        self._leaf_count = 0
         self.root = self._grow_tree(X, y)
 
     def _best_split(self, X, y):
@@ -66,6 +76,8 @@ class DecisionTree:
 
                 if len(left) == 0 or len(right) == 0:
                     continue
+                if len(left) < self.min_samples_leaf or len(right) < self.min_samples_leaf:
+                    continue
 
                 g = (len(left) * gini(left) + len(right) * gini(right)) / len(y)
 
@@ -76,19 +88,31 @@ class DecisionTree:
 
         return split_idx, split_thr
 
+    def _make_leaf(self, y):
+        if self.max_leaf_nodes is None or self._leaf_count < self.max_leaf_nodes:
+            self._leaf_count += 1
+        return Node(value=np.bincount(y).argmax())
+
     def _grow_tree(self, X, y, depth=0):
         num_samples = len(y)
         num_labels = len(np.unique(y))
 
         # stopping conditions
+        min_samples_leaf = max(1, int(self.min_samples_leaf))
+        min_samples_split = max(int(self.min_samples_split), 2 * min_samples_leaf)
         max_depth_reached = (self.max_depth is not None) and (depth >= self.max_depth)
-        if max_depth_reached or num_labels == 1 or num_samples < self.min_samples_split:
-            leaf_value = np.bincount(y).argmax()
-            return Node(value=leaf_value)
+        max_leaves_reached = (self.max_leaf_nodes is not None) and (self._leaf_count >= self.max_leaf_nodes)
+        if (
+            max_depth_reached
+            or max_leaves_reached
+            or num_labels == 1
+            or num_samples < min_samples_split
+        ):
+            return self._make_leaf(y)
 
         feat, thr = self._best_split(X, y)
         if feat is None:
-            return Node(value=np.bincount(y).argmax())
+            return self._make_leaf(y)
 
         left_idx = X[:, feat] <= thr
         right_idx = X[:, feat] > thr
@@ -110,11 +134,40 @@ class DecisionTree:
         return np.array([self._predict(x, self.root) for x in X])
 
 class RandomForest:
-    def __init__(self, n_estimators, max_depth, random_state=None):
+    def __init__(
+        self,
+        n_estimators,
+        max_depth,
+        random_state=None,
+        max_features=None,
+        max_leaf_nodes=None,
+        min_samples_leaf=1,
+    ):
         self.n_estimators = n_estimators
         self.max_depth = max_depth
         self.random_state = random_state
+        self.max_features = max_features
+        self.max_leaf_nodes = max_leaf_nodes
+        self.min_samples_leaf = min_samples_leaf
         self.trees = []
+
+    def _resolve_max_features(self, n_features):
+        if self.max_features is None:
+            return max(1, int(math.sqrt(n_features)))
+        if isinstance(self.max_features, str):
+            key = self.max_features.lower()
+            if key == "sqrt":
+                return max(1, int(math.sqrt(n_features)))
+            if key == "log2":
+                return max(1, int(math.log2(n_features)))
+            return n_features
+        if isinstance(self.max_features, float):
+            if 0 < self.max_features <= 1:
+                return max(1, int(n_features * self.max_features))
+            return n_features
+        if isinstance(self.max_features, int):
+            return max(1, min(n_features, int(self.max_features)))
+        return n_features
 
     def fit(self, X, y):
         X = np.asarray(X)
@@ -122,7 +175,7 @@ class RandomForest:
         self.trees = []
         self.classes_ = np.unique(y)
         n_samples = len(y)
-        max_features = int(math.sqrt(X.shape[1]))
+        max_features = self._resolve_max_features(X.shape[1])
 
         rng = np.random.RandomState(self.random_state) if self.random_state is not None else np.random
 
@@ -134,7 +187,9 @@ class RandomForest:
 
             tree = DecisionTree(
                 max_depth=self.max_depth,
-                max_features=max_features
+                max_features=max_features,
+                max_leaf_nodes=self.max_leaf_nodes,
+                min_samples_leaf=self.min_samples_leaf,
             )
             tree.fit(X_sample, y_sample)
             return tree
@@ -174,15 +229,19 @@ class RandomForest:
 def run_random_forest(X_train, y_train, X_test, y_test,
                       n_estimators=50,
                       max_depth=10,
-                      random_state=42):
-    """
-    Train + evaluate Random Forest (from scratch)
-    """
+                      random_state=42,
+                      max_features=None,
+                      max_leaf_nodes=None,
+                      min_samples_leaf=1):
+   
 
     rf = RandomForest(
         n_estimators=n_estimators,
         max_depth=max_depth,
         random_state=random_state,
+        max_features=max_features,
+        max_leaf_nodes=max_leaf_nodes,
+        min_samples_leaf=min_samples_leaf,
     )
 
     import time
@@ -227,7 +286,16 @@ def run_random_forest(X_train, y_train, X_test, y_test,
         pass
 
     print("\n===== Random Forest (Scratch) =====")
-    print(f"n_estimators={n_estimators}, max_depth={max_depth}, random_state={random_state}")
+    print(
+        "n_estimators={0}, max_depth={1}, random_state={2}, max_features={3}, max_leaf_nodes={4}, min_samples_leaf={5}".format(
+            n_estimators,
+            max_depth,
+            random_state,
+            max_features,
+            max_leaf_nodes,
+            min_samples_leaf,
+        )
+    )
     print(f"Train time: {train_time:.4f}s | Test time: {test_time:.4f}s")
     print(
         f"ACC={acc:.4f} | BAL_ACC={bal_acc:.4f} | "
@@ -246,19 +314,7 @@ def run_random_forest(X_train, y_train, X_test, y_test,
     return rf, y_pred
 
 def grid_search_custom_rf(X, y, param_grid, n_splits=5):
-    """
-    Perform grid search for Custom Random Forest using KFold cross-validation.
     
-    Parameters:
-    - X, y: Features and labels.
-    - param_grid: Dictionary with parameters names as keys and lists of parameter settings to try.
-    - n_splits: Number of folds for KFold.
-    
-    Returns:
-    - best_model: Model trained on all data with best parameters.
-    - best_params: Best hyperparameters.
-    - best_score: Best average cross-validation score (accuracy).
-    """
     X_arr = np.asarray(X)
     y_arr = np.asarray(y)
     
@@ -280,17 +336,17 @@ def grid_search_custom_rf(X, y, param_grid, n_splits=5):
             rf.fit(X_train, y_train)
             y_pred = rf.predict(X_val)
             
-            acc = accuracy_score(y_val, y_pred)
-            fold_scores.append(acc)
+            f1_macro_val = f1_score(y_val, y_pred, average="macro", zero_division=0)
+            fold_scores.append(f1_macro_val)
             
         avg_score = np.mean(fold_scores)
-        print(f"Params: {params} | CV Accuracy: {avg_score:.4f} (folds: {[round(s, 4) for s in fold_scores]})")
+        print(f"Params: {params} | CV F1_macro: {avg_score:.4f} (folds: {[round(s, 4) for s in fold_scores]})")
         
         if avg_score > best_score:
             best_score = avg_score
             best_params = params
             
-    print(f"\nBest Params: {best_params} | Best CV Accuracy: {best_score:.4f}")
+    print(f"\nBest Params: {best_params} | Best CV F1_macro: {best_score:.4f}")
     
     print("Training best model on all data...")
     best_model = RandomForest(**best_params)
