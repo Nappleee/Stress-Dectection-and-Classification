@@ -1,12 +1,14 @@
 import pandas as pd
 import numpy as np
 from pathlib import Path
+import matplotlib.pyplot as plt
 from data_prep import standardize_features_df, find_label_column
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 from custom_rf import run_random_forest, grid_search_custom_rf
 
 def main():
-    feature_file = Path("data/features/7/features_windowed_balanced_256s_id7.csv")
+    feature_file = Path("data/features/4/features_windowed_balanced_256s_id4.csv")
     if not feature_file.exists():
         print(f"File not found: {feature_file}")
         print("Hãy tạo file features mới từ concateFile.ipynb trước.")
@@ -65,6 +67,15 @@ def main():
         max_leaf_nodes=best_params.get("max_leaf_nodes"),
         min_samples_leaf=best_params.get("min_samples_leaf", 1),
     )
+
+    print("\n=== 5. Confusion Matrix ===")
+    labels = np.unique(y)
+    cm = confusion_matrix(y_test, y_pred, labels=labels)
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=labels)
+    disp.plot(cmap="Blues", values_format="d")
+    plt.title("Confusion Matrix (Test Set)")
+    plt.tight_layout()
+    plt.show()
 
 if __name__ == "__main__":
     main()
