@@ -33,8 +33,6 @@ Khóa luận tập trung vào việc tạo dữ liệu và trích xuất các đ
 3) Cài đặt thư viện
    - pip install -r requirements.txt
 
-Neu can giao dien Jupyter day du:
-- pip install jupyterlab
 
 ## Cach su dung nhanh
 
