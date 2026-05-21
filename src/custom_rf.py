@@ -194,7 +194,6 @@ class RandomForest:
             tree.fit(X_sample, y_sample)
             return tree
 
-        # Train trees in parallel
         seeds = rng.randint(0, 2**31, size=self.n_estimators)
         self.trees = Parallel(n_jobs=-1)(
             delayed(train_single_tree)(seed) for seed in seeds
@@ -210,21 +209,6 @@ class RandomForest:
             np.bincount(preds[:, i]).argmax()
             for i in range(X.shape[0])
         ])
-
-    def predict_proba(self, X):
-        X = np.asarray(X)
-        # Predict in parallel
-        preds = np.array(Parallel(n_jobs=-1, prefer="threads")(
-            delayed(tree.predict)(X) for tree in self.trees
-        ))
-        proba = np.zeros((X.shape[0], len(self.classes_)), dtype=float)
-        class_to_idx = {c: i for i, c in enumerate(self.classes_)}
-        for i in range(X.shape[0]):
-            votes = preds[:, i]
-            for v in votes:
-                proba[i, class_to_idx[v]] += 1.0
-        proba /= max(len(self.trees), 1)
-        return proba
 
 def run_random_forest(X_train, y_train, X_test, y_test,
                       n_estimators=50,
@@ -257,35 +241,11 @@ def run_random_forest(X_train, y_train, X_test, y_test,
     y_pred = np.asarray(y_pred)
 
     acc = accuracy_score(y_true, y_pred)
-    bal_acc = balanced_accuracy_score(y_true, y_pred)
     p_macro = precision_score(y_true, y_pred, average="macro", zero_division=0)
     r_macro = recall_score(y_true, y_pred, average="macro", zero_division=0)
     f1_macro_val = f1_score(y_true, y_pred, average="macro", zero_division=0)
-    p_weighted = precision_score(y_true, y_pred, average="weighted", zero_division=0)
-    r_weighted = recall_score(y_true, y_pred, average="weighted", zero_division=0)
-    f1_weighted_val = f1_score(y_true, y_pred, average="weighted", zero_division=0)
-    mcc = matthews_corrcoef(y_true, y_pred)
-    kappa = cohen_kappa_score(y_true, y_pred)
     
-    
-    roc_auc = np.nan
-    pr_auc = np.nan
-    try:
-        y_proba = rf.predict_proba(X_test)
-        classes = np.unique(y_true)
-        if len(classes) == 2:
-            pos_idx = 1 if y_proba.shape[1] > 1 else 0
-            score_pos = y_proba[:, pos_idx]
-            roc_auc = roc_auc_score(y_true, score_pos)
-            pr_auc = average_precision_score(y_true, score_pos)
-        else:
-            y_bin = label_binarize(y_true, classes=classes)
-            roc_auc = roc_auc_score(y_true, y_proba, multi_class="ovr", average="weighted")
-            pr_auc = average_precision_score(y_bin, y_proba, average="weighted")
-    except Exception:
-        pass
-
-    print("\n===== Random Forest (Scratch) =====")
+    print("\n===== Random Forest =====")
     print(
         "n_estimators={0}, max_depth={1}, random_state={2}, max_features={3}, max_leaf_nodes={4}, min_samples_leaf={5}".format(
             n_estimators,
@@ -298,12 +258,9 @@ def run_random_forest(X_train, y_train, X_test, y_test,
     )
     print(f"Train time: {train_time:.4f}s | Test time: {test_time:.4f}s")
     print(
-        f"ACC={acc:.4f} | BAL_ACC={bal_acc:.4f} | "
+        f"ACC={acc:.4f} | "
         f"Precision_macro={p_macro:.4f} | Recall_macro={r_macro:.4f} | "
-        f"Precision_w={p_weighted:.4f} | Recall_w={r_weighted:.4f} | "
-        f"F1_macro={f1_macro_val:.4f} | F1_weighted={f1_weighted_val:.4f} | "
-        f"MCC={mcc:.4f} | Kappa={kappa:.4f} | "
-        f"ROC_AUC={roc_auc:.4f} | PR_AUC={pr_auc:.4f}"
+        f"F1_macro={f1_macro_val:.4f}"
     )
 
     print("\nConfusion Matrix:")
@@ -313,7 +270,7 @@ def run_random_forest(X_train, y_train, X_test, y_test,
 
     return rf, y_pred
 
-def grid_search_custom_rf(X, y, param_grid, n_splits=5):
+def grid_search_custom_rf(X, y, param_grid, n_splits=3):
     
     X_arr = np.asarray(X)
     y_arr = np.asarray(y)

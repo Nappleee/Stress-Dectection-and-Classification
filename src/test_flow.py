@@ -6,7 +6,7 @@ from sklearn.model_selection import train_test_split
 from custom_rf import run_random_forest, grid_search_custom_rf
 
 def main():
-    feature_file = Path("data/features/5/features_windowed_balanced_256s_id5.csv")
+    feature_file = Path("data/features/7/features_windowed_balanced_256s_id7.csv")
     if not feature_file.exists():
         print(f"File not found: {feature_file}")
         print("Hãy tạo file features mới từ concateFile.ipynb trước.")
@@ -36,7 +36,7 @@ def main():
     
     print("\n=== 2. Train/Test Split (70/30) ===")
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.30, random_state=42, stratify=y
+        X, y, test_size=0.30, random_state=42, shuffle=False
     )
     
     print(f"Train size: {len(X_train)}, Test size: {len(X_test)}")
@@ -44,10 +44,10 @@ def main():
     print("\n=== 3. Custom Random Forest Modeling with Grid Search ===")
     
     param_grid = {
-        "n_estimators": [100, 200, 300],
-        "max_depth": [10, 20, 30, None],
-        "min_samples_leaf": [1, 2, 4],
-        "max_features": ["sqrt", "log2"]
+        "n_estimators": [100, 200],
+        "max_depth": [20, None],
+        "min_samples_leaf": [1, 2],
+        "max_features": ["sqrt"]
     }
     
     _, best_params, _ = grid_search_custom_rf(
